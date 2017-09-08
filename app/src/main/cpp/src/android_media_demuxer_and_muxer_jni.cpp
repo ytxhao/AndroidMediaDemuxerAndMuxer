@@ -308,7 +308,8 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
             AVStream *in_stream = ifmt_ctx_v->streams[i];
 
             AVStream *out_stream = avformat_new_stream(ofmt_ctx, NULL);
-
+            AVCodecContext *dec_ctx = avcodec_alloc_context3(avcodec_find_decoder(in_stream->codec->codec_id));
+            avcodec_copy_context(dec_ctx, in_stream->codec);
             videoindex_v=i;
             if (!out_stream) {
                 J4A_ALOGD( "Failed allocating output stream\n");
@@ -317,27 +318,22 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
             }
             AVCodecContext *pCodecCtx = out_stream->codec;
             videoindex_out=out_stream->index;
-            //avcodec_copy_context(pCodecCtx, in_stream->codec);
-            //Copy the settings of AVCodecContext
-//            if (avcodec_copy_context(out_stream->codec, in_stream->codec) < 0) {
-//                J4A_ALOGD( "Failed to copy context from input to output stream codec context\n");
-//                goto end;
-//            }
 
-            pCodecCtx->codec_type = in_stream->codecpar->codec_type;
-            pCodecCtx->codec_id = in_stream->codecpar->codec_id;
-            pCodecCtx->codec_tag = in_stream->codecpar->codec_tag;
-            pCodecCtx->bit_rate       = in_stream->codecpar->bit_rate;
-            pCodecCtx->rc_max_rate    = in_stream->codec->rc_max_rate;
-            pCodecCtx->rc_buffer_size = in_stream->codec->rc_buffer_size;
-            pCodecCtx->field_order    = in_stream->codecpar->field_order;
-            pCodecCtx->extradata_size= in_stream->codecpar->extradata_size;
-            pCodecCtx->bits_per_coded_sample  = in_stream->codecpar->bits_per_coded_sample;
+
+            pCodecCtx->codec_type = dec_ctx->codec_type;
+            pCodecCtx->codec_id = dec_ctx->codec_id;
+            pCodecCtx->codec_tag = dec_ctx->codec_tag;
+            pCodecCtx->bit_rate       = dec_ctx->bit_rate;
+            pCodecCtx->rc_max_rate    = dec_ctx->rc_max_rate;
+            pCodecCtx->rc_buffer_size = dec_ctx->rc_buffer_size;
+            pCodecCtx->field_order    = dec_ctx->field_order;
+            pCodecCtx->extradata_size= dec_ctx->extradata_size;
+            pCodecCtx->bits_per_coded_sample  = dec_ctx->bits_per_coded_sample;
             pCodecCtx->time_base = in_stream->time_base;
 
             out_stream->disposition = in_stream->disposition ;
 
-            pCodecCtx->bits_per_raw_sample = in_stream->codec->bits_per_raw_sample;
+            pCodecCtx->bits_per_raw_sample = dec_ctx->bits_per_raw_sample;
             //复制AVCodecContext的设置（Copy the settings of AVCodecContext）
 
             if(in_stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO){
@@ -350,8 +346,8 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
                 pCodecCtx->initial_padding    = in_stream->codec->delay;
                 pCodecCtx->profile            = in_stream->codecpar->profile;
             }else{
-                pCodecCtx->pix_fmt            = in_stream->codec->pix_fmt;
-                pCodecCtx->colorspace         = in_stream->codec->colorspace;
+                pCodecCtx->pix_fmt            = dec_ctx->pix_fmt;
+                pCodecCtx->colorspace         = dec_ctx->colorspace;
                 pCodecCtx->color_range        = in_stream->codecpar->color_range;
                 pCodecCtx->color_primaries    = in_stream->codecpar->color_primaries;
                 pCodecCtx->color_trc          = in_stream->codecpar->color_trc;
@@ -364,17 +360,17 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
             //ret = avcodec_parameters_from_context(out_stream->codecpar,pCodecCtx);
 
             uint64_t extra_size;
-            extra_size = (uint64_t)in_stream->codecpar->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
-            if(in_stream->codecpar->extradata_size){
-                out_stream->codecpar->extradata  = (uint8_t *) av_mallocz(extra_size);
-                if (!out_stream->codecpar->extradata) {
+            extra_size = (uint64_t)dec_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
+            if(dec_ctx->extradata_size){
+                pCodecCtx->extradata  = (uint8_t *) av_mallocz(extra_size);
+                if (!pCodecCtx->extradata) {
                     J4A_ALOGD("pCodecCtx->extradata is null");
                 }
-                memcpy(out_stream->codecpar->extradata, in_stream->codecpar->extradata, in_stream->codecpar->extradata_size);
+                memcpy(pCodecCtx->extradata, dec_ctx->extradata, dec_ctx->extradata_size);
             }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",out_stream->codecpar->extradata_size,out_stream->codecpar->extradata,out_stream->codecpar->codec_type);
-            for(int i=0;i<out_stream->codecpar->extradata_size;i++){
-                J4A_ALOGD("extradata[%d]=%#x",i,out_stream->codecpar->extradata[i]);
+            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",pCodecCtx->extradata_size,pCodecCtx->extradata,pCodecCtx->codec_type);
+            for(int i=0;i<pCodecCtx->extradata_size;i++){
+                J4A_ALOGD("extradata[%d]=%#x",i,pCodecCtx->extradata[i]);
             }
             out_stream->codecpar->codec_tag = 0;
             if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
@@ -385,11 +381,11 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
 
     for (i = 0; i < ifmt_ctx_a->nb_streams; i++) {
         //Create output AVStream according to input AVStream
-        if(ifmt_ctx_a->streams[i]->codec->codec_type==AVMEDIA_TYPE_AUDIO){
+        if(ifmt_ctx_a->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){
             AVStream *in_stream = ifmt_ctx_a->streams[i];
             AVStream *out_stream = avformat_new_stream(ofmt_ctx, in_stream->codec->codec);
-            //AVCodecContext *pCodecCtx = avcodec_alloc_context3(in_stream->codec->codec);
-            //avcodec_copy_context(pCodecCtx, in_stream->codec);
+            AVCodecContext *dec_ctx = avcodec_alloc_context3(avcodec_find_decoder(in_stream->codec->codec_id));
+            avcodec_copy_context(dec_ctx, in_stream->codec);
             audioindex_a=i;
             if (!out_stream) {
                 J4A_ALOGD( "Failed allocating output stream\n");
@@ -398,64 +394,60 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
             }
             AVCodecContext *pCodecCtx = out_stream->codec;
             audioindex_out=out_stream->index;
-            //Copy the settings of AVCodecContext
-//            if (avcodec_copy_context(out_stream->codec, in_stream->codec) < 0) {
-//                J4A_ALOGD( "Failed to copy context from input to output stream codec context\n");
-//                goto end;
-//            }
-            pCodecCtx->codec_type = in_stream->codecpar->codec_type;
-            pCodecCtx->codec_id = in_stream->codecpar->codec_id;
-            pCodecCtx->codec_tag = in_stream->codecpar->codec_tag;
-            pCodecCtx->bit_rate       = in_stream->codecpar->bit_rate;
-            pCodecCtx->rc_max_rate    = in_stream->codec->rc_max_rate;
-            pCodecCtx->rc_buffer_size = in_stream->codec->rc_buffer_size;
-            pCodecCtx->field_order    = in_stream->codecpar->field_order;
-            pCodecCtx->extradata_size= in_stream->codecpar->extradata_size;
-            pCodecCtx->bits_per_coded_sample  = in_stream->codecpar->bits_per_coded_sample;
+
+            pCodecCtx->codec_type = dec_ctx->codec_type;
+            pCodecCtx->codec_id = dec_ctx->codec_id;
+            pCodecCtx->codec_tag = dec_ctx->codec_tag;
+            pCodecCtx->bit_rate       = dec_ctx->bit_rate;
+            pCodecCtx->rc_max_rate    = dec_ctx->rc_max_rate;
+            pCodecCtx->rc_buffer_size = dec_ctx->rc_buffer_size;
+            pCodecCtx->field_order    = dec_ctx->field_order;
+            pCodecCtx->extradata_size= dec_ctx->extradata_size;
+            pCodecCtx->bits_per_coded_sample  = dec_ctx->bits_per_coded_sample;
             pCodecCtx->time_base = in_stream->time_base;
 
             out_stream->disposition = in_stream->disposition ;
 
-            pCodecCtx->bits_per_raw_sample = in_stream->codec->bits_per_raw_sample;
+            pCodecCtx->bits_per_raw_sample = dec_ctx->bits_per_raw_sample;
             //复制AVCodecContext的设置（Copy the settings of AVCodecContext）
 
             if(in_stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO){
-                pCodecCtx->channel_layout     = in_stream->codecpar->channel_layout;
-                pCodecCtx->sample_rate        = in_stream->codecpar->sample_rate;
-                pCodecCtx->channels           = in_stream->codecpar->channels;
-                pCodecCtx->frame_size         = in_stream->codecpar->frame_size;
-                pCodecCtx->audio_service_type = in_stream->codec->audio_service_type;
-                pCodecCtx->block_align        = in_stream->codecpar->block_align;
-                pCodecCtx->initial_padding    = in_stream->codec->delay;
-                pCodecCtx->profile            = in_stream->codecpar->profile;
+                pCodecCtx->channel_layout     = dec_ctx->channel_layout;
+                pCodecCtx->sample_rate        = dec_ctx->sample_rate;
+                pCodecCtx->channels           = dec_ctx->channels;
+                pCodecCtx->frame_size         = dec_ctx->frame_size;
+                pCodecCtx->audio_service_type = dec_ctx->audio_service_type;
+                pCodecCtx->block_align        = dec_ctx->block_align;
+                pCodecCtx->initial_padding    = dec_ctx->delay;
+                pCodecCtx->profile            = dec_ctx->profile;
             }else{
-                pCodecCtx->pix_fmt            = in_stream->codec->pix_fmt;
-                pCodecCtx->colorspace         = in_stream->codec->colorspace;
-                pCodecCtx->color_range        = in_stream->codecpar->color_range;
-                pCodecCtx->color_primaries    = in_stream->codecpar->color_primaries;
-                pCodecCtx->color_trc          = in_stream->codecpar->color_trc;
-                pCodecCtx->width              = in_stream->codecpar->width;
-                pCodecCtx->height             = in_stream->codecpar->height;
-                pCodecCtx->has_b_frames       = in_stream->codec->has_b_frames;
+                pCodecCtx->pix_fmt            = dec_ctx->pix_fmt;
+                pCodecCtx->colorspace         = dec_ctx->colorspace;
+                pCodecCtx->color_range        = dec_ctx->color_range;
+                pCodecCtx->color_primaries    = dec_ctx->color_primaries;
+                pCodecCtx->color_trc          = dec_ctx->color_trc;
+                pCodecCtx->width              = dec_ctx->width;
+                pCodecCtx->height             = dec_ctx->height;
+                pCodecCtx->has_b_frames       = dec_ctx->has_b_frames;
             }
             out_stream->avg_frame_rate = in_stream->avg_frame_rate;
             out_stream->r_frame_rate = in_stream->r_frame_rate;
             //ret = avcodec_parameters_from_context(out_stream->codecpar,pCodecCtx);
 
             uint64_t extra_size;
-            extra_size = (uint64_t)in_stream->codecpar->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
-            if(in_stream->codecpar->extradata_size){
-                out_stream->codecpar->extradata  = (uint8_t *) av_mallocz(extra_size);
-                if (!out_stream->codecpar->extradata) {
+            extra_size = (uint64_t)dec_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
+            if(dec_ctx->extradata_size){
+                pCodecCtx->extradata  = (uint8_t *) av_mallocz(extra_size);
+                if (!pCodecCtx->extradata) {
                     J4A_ALOGD("pCodecCtx->extradata is null");
                 }
-                memcpy(out_stream->codecpar->extradata, in_stream->codecpar->extradata, in_stream->codecpar->extradata_size);
+                memcpy(pCodecCtx->extradata, dec_ctx->extradata, dec_ctx->extradata_size);
             }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",out_stream->codecpar->extradata_size,out_stream->codecpar->extradata,out_stream->codecpar->codec_type);
+            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",pCodecCtx->extradata_size,pCodecCtx->extradata,pCodecCtx->codec_type);
             for(int i=0;i<out_stream->codecpar->extradata_size;i++){
                 J4A_ALOGD("extradata[%d]=%#x",i,out_stream->codecpar->extradata[i]);
             }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",in_stream->codecpar->extradata_size,in_stream->codecpar->extradata,in_stream->codecpar->codec_type);
+            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",dec_ctx->extradata_size,dec_ctx->extradata,dec_ctx->codec_type);
             out_stream->codecpar->codec_tag = 0;
             if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
                 pCodecCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
