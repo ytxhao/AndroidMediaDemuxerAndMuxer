@@ -243,6 +243,7 @@ void log_callback(void* ptr, int level, const char* fmt,va_list vl)
 JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_muxer
         (JNIEnv *env, jobject obj, jstring inputVideoFile, jstring inputAudioFile, jstring outputMediaFile)
 {
+    uint8_t error[128];
 
     AVOutputFormat *ofmt = NULL;
     //Input AVFormatContext and Output AVFormatContext
@@ -270,7 +271,8 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
  //   J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
  //   J4A_ALOGD("ytxhao test video time_base.num=%d,time_base.den=%d",ifmt_ctx_v->streams[0]->time_base.num,ifmt_ctx_v->streams[0]->time_base.den);
     if ((ret = avformat_open_input(&ifmt_ctx_v, in_filename_v, 0, 0)) < 0) {
-        J4A_ALOGD( "Could not open input file.");
+        av_strerror(ret, (char *) error, sizeof(error));
+        J4A_ALOGD( "Could not open input file ret=%d error=%s",ret,error);
         goto end;
     }
     J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
@@ -282,7 +284,7 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
     J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
     J4A_ALOGD("ytxhao test video time_base.num=%d,time_base.den=%d",ifmt_ctx_v->streams[0]->time_base.num,ifmt_ctx_v->streams[0]->time_base.den);
     if ((ret = avformat_open_input(&ifmt_ctx_a, in_filename_a, 0, 0)) < 0) {
-        J4A_ALOGD( "Could not open input file.");
+        J4A_ALOGD( "Could not open input file ");
         goto end;
     }
     if ((ret = avformat_find_stream_info(ifmt_ctx_a, 0)) < 0) {
