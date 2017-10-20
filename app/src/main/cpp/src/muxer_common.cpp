@@ -43,6 +43,7 @@ AVDictionary *sws_dict;
 AVDictionary *swr_opts;
 AVDictionary *format_opts, *codec_opts, *resample_opts;
 
+static int write_packet(OutputFile *of, AVPacket *pkt, OutputStream *ost, int unqueue);
 void init_opts(void)
 {
     av_dict_set(&sws_dict, "flags", "bicubic", 0);
@@ -447,15 +448,17 @@ static int add_input_streams(OptionsContext *o, AVFormatContext *ic)
                 // avformat_find_stream_info() doesn't set this for us anymore.
                 ist->dec_ctx->framerate = st->avg_frame_rate;
 
-//                MATCH_PER_STREAM_OPT(frame_rates, str, framerate, ic, st);
-//                if (framerate && av_parse_video_rate(&ist->framerate,
-//                                                     framerate) < 0) {
-//                    av_log(NULL, AV_LOG_ERROR, "Error parsing framerate %s.\n",
-//                           framerate);
-//                    exit_program(1);
-//                }
+                MATCH_PER_STREAM_OPT(frame_rates, str, framerate, ic, st,ret);
+                if (framerate && av_parse_video_rate(&ist->framerate,
+                                                     framerate) < 0) {
+                    J4A_ALOGE("Error parsing framerate %s.\n",
+                           framerate);
+                    return -1;
+                }
 
                 ist->top_field_first = -1;
+                MATCH_PER_STREAM_OPT(top_field_first, i, ist->top_field_first, ic, st,ret);
+
 
                 break;
             case AVMEDIA_TYPE_AUDIO:
@@ -677,6 +680,45 @@ static OutputStream *new_audio_stream(OptionsContext *o, AVFormatContext *oc, in
     return ost;
 }
 
+static OutputStream *new_video_stream(OptionsContext *o, AVFormatContext *oc, int source_index)
+{
+    AVStream *st;
+    OutputStream *ost;
+    AVCodecContext *video_enc;
+    int ret = 0;
+    char *frame_rate = NULL, *frame_aspect_ratio = NULL;
+
+    ost = new_output_stream(o, oc, AVMEDIA_TYPE_VIDEO, source_index);
+    st  = ost->st;
+    video_enc = ost->enc_ctx;
+
+    MATCH_PER_STREAM_OPT(frame_rates, str, frame_rate, oc, st,ret);
+    if (frame_rate && av_parse_video_rate(&ost->frame_rate, frame_rate) < 0) {
+        J4A_ALOGE("Invalid framerate value: %s\n", frame_rate);
+        return NULL;
+    }
+
+    MATCH_PER_STREAM_OPT(frame_aspect_ratios, str, frame_aspect_ratio, oc, st,ret);
+    if (frame_aspect_ratio) {
+        AVRational q;
+        if (av_parse_ratio(&q, frame_aspect_ratio, 255, 0, NULL) < 0 ||
+            q.num <= 0 || q.den <= 0) {
+            J4A_ALOGE( "Invalid aspect ratio: %s\n", frame_aspect_ratio);
+            return NULL;
+        }
+        ost->frame_aspect_ratio = q;
+    }
+
+    MATCH_PER_STREAM_OPT(filter_scripts, str, ost->filters_script, oc, st,ret);
+    MATCH_PER_STREAM_OPT(filters,        str, ost->filters,        oc, st,ret);
+
+
+    ost->copy_initial_nonkeyframes = 0;
+    MATCH_PER_STREAM_OPT(copy_initial_nonkeyframes, i, ost->copy_initial_nonkeyframes, oc ,st,ret);
+
+
+    return ost;
+}
 
 
 static int open_input_file(OptionsContext *o, const char *filename)
@@ -704,6 +746,37 @@ static int open_input_file(OptionsContext *o, const char *filename)
     }
 
     ic->flags |= AVFMT_FLAG_KEEP_SIDE_DATA;
+
+
+    if (o->nb_audio_sample_rate) {
+        av_dict_set_int(&o->g->format_opts, "sample_rate", o->audio_sample_rate[o->nb_audio_sample_rate - 1].u.i, 0);
+    }
+
+
+    if (o->nb_audio_channels) {
+        /* because we set audio_channels based on both the "ac" and
+         * "channel_layout" options, we need to check that the specified
+         * demuxer actually has the "channels" option before setting it */
+        if (file_iformat && file_iformat->priv_class &&
+            av_opt_find(&file_iformat->priv_class, "channels", NULL, 0,
+                        AV_OPT_SEARCH_FAKE_OBJ)) {
+            av_dict_set_int(&o->g->format_opts, "channels", o->audio_channels[o->nb_audio_channels - 1].u.i, 0);
+        }
+    }
+
+
+    if (o->nb_frame_rates) {
+        /* set the format-level framerate option;
+         * this is important for video grabbers, e.g. x11 */
+        if (file_iformat && file_iformat->priv_class &&
+            av_opt_find(&file_iformat->priv_class, "framerate", NULL, 0,
+                        AV_OPT_SEARCH_FAKE_OBJ)) {
+            av_dict_set(&o->g->format_opts, "framerate",
+                        (const char *) o->frame_rates[o->nb_frame_rates - 1].u.str, 0);
+        }
+    }
+
+
     ic->flags |= AVFMT_FLAG_NONBLOCK;
     ic->interrupt_callback = int_cb;
 
@@ -857,8 +930,8 @@ static int open_output_file(OptionsContext *o, const char *filename)
                     idx = i;
                 }
             }
-//            if (idx >= 0)
-//                new_video_stream(o, oc, idx);
+            if (idx >= 0)
+                new_video_stream(o, oc, idx);
         }
 
 
@@ -1247,11 +1320,11 @@ static int check_init_output_file(OutputFile *of, int file_index)
         if (!av_fifo_size(ost->muxing_queue))
             ost->mux_timebase = ost->st->time_base;
 
-//        while (av_fifo_size(ost->muxing_queue)) {
-//            AVPacket pkt;
-//            av_fifo_generic_read(ost->muxing_queue, &pkt, sizeof(pkt), NULL);
-//            write_packet(of, &pkt, ost, 1);
-//        }
+        while (av_fifo_size(ost->muxing_queue)) {
+            AVPacket pkt;
+            av_fifo_generic_read(ost->muxing_queue, &pkt, sizeof(pkt), NULL);
+            write_packet(of, &pkt, ost, 1);
+        }
     }
 
     return 0;
@@ -2277,7 +2350,8 @@ void init_var(){
     audio_volume      = 256;
 
 }
-int ffmpeg_parse_options(int argc, const char *input_file_name, const char *output_file_name)
+int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
+                         const char *input_file_name_video, const char *output_file_name)
 {
     const OptionDef *po;
     OptionParseContext octx;
@@ -2288,20 +2362,40 @@ int ffmpeg_parse_options(int argc, const char *input_file_name, const char *outp
     memset(&octx, 0, sizeof(octx));
 
     init_parse_context(&octx, groups, FF_ARRAY_ELEMS(groups));
-    //ret = GROUP_INFILE;
-    finish_group(&octx, GROUP_INFILE, input_file_name);
-   // const char *name = "aac_adtstoasc";
-    po = find_option(options, "absf");
-    if (po->name) {
-        J4A_ALOGD("po->name=%s ",po->name);
-        add_opt(&octx, po, "absf", "aac_adtstoasc");
+
+    if(input_file_name_audio != NULL){
+        finish_group(&octx, GROUP_INFILE, input_file_name_audio);
+        // const char *name = "aac_adtstoasc";
+        po = find_option(options, "absf");
+        if (po->name) {
+            J4A_ALOGD("po->name=%s ",po->name);
+            add_opt(&octx, po, "absf", "aac_adtstoasc");
+        }
+
+        po = find_option(options, "acodec");
+        if (po->name) {
+            J4A_ALOGD("po->name=%s ",po->name);
+            add_opt(&octx, po, "acodec", "copy");
+        }
     }
 
-    po = find_option(options, "acodec");
-    if (po->name) {
-        J4A_ALOGD("po->name=%s ",po->name);
-        add_opt(&octx, po, "acodec", "copy");
+
+    if(input_file_name_video != NULL){
+        po = find_option(options, "r");
+        if (po->name) {
+            J4A_ALOGD("po->name=%s ",po->name);
+            add_opt(&octx, po, "r", "20");
+        }
+
+        finish_group(&octx, GROUP_INFILE, input_file_name_video);
+
+        po = find_option(options, "vcodec");
+        if (po->name) {
+            J4A_ALOGD("po->name=%s ",po->name);
+            add_opt(&octx, po, "vcodec", "copy");
+        }
     }
+
 
     finish_group(&octx, GROUP_OUTFILE, output_file_name);
 
@@ -2346,6 +2440,9 @@ extern const OptionDef options[] = {
         { "acodec",         OPT_AUDIO | HAS_ARG  | OPT_PERFILE |
                             OPT_INPUT | OPT_OUTPUT,                                    { .func_arg = opt_audio_codec },
                 "force audio codec ('copy' to copy stream)", "codec" },
+        { "r",            OPT_VIDEO | HAS_ARG  | OPT_STRING | OPT_SPEC |
+                          OPT_INPUT | OPT_OUTPUT,                                    { .off = OFFSET(frame_rates) },
+                "set frame rate (Hz value, fraction or abbreviation)", "rate" },
         { "vcodec",       OPT_VIDEO | HAS_ARG  | OPT_PERFILE | OPT_INPUT |
                           OPT_OUTPUT,                                                { .func_arg = opt_video_codec },
                 "force video codec ('copy' to copy stream)", "codec" },

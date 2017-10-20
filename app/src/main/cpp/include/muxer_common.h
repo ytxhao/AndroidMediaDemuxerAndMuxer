@@ -14,9 +14,10 @@ extern "C"
 #include <libavutil/fifo.h>
 #include <libavutil/eval.h>
 #include <libavutil/avstring.h>
-#include "libavutil/opt.h"
+#include <libavutil/opt.h>
 #include <libavutil/time.h>
 #include <libavutil/intreadwrite.h>
+#include <libavutil/parseutils.h>
 void log_callback(void* ptr, int level, const char* fmt,va_list vl);
 
 #ifdef __cplusplus
@@ -600,6 +601,6 @@ O type_transform(I in,O out);
     }\
 }
 
-int ffmpeg_parse_options(int argc, const char *input_file_name, const char *output_file_name);
-
+int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
+                         const char *input_file_name_video, const char *output_file_name);
 #endif //ANDROIDMEDIADEMUXERANDMUXER_MUXER_COMMON_H
