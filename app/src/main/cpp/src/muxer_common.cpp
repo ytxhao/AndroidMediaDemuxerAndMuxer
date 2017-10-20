@@ -1575,6 +1575,7 @@ static void reset_eagain(void)
 
 static int get_input_packet(InputFile *f, AVPacket *pkt)
 {
+    int ret = 0;
     if (f->rate_emu) {
         int i;
         for (i = 0; i < f->nb_streams; i++) {
@@ -1586,7 +1587,8 @@ static int get_input_packet(InputFile *f, AVPacket *pkt)
         }
     }
 
-    return av_read_frame(f->ctx, pkt);
+    ret = av_read_frame(f->ctx, pkt);
+    return ret;
 }
 
 static void finish_output_stream(OutputStream *ost)
@@ -2353,7 +2355,6 @@ void init_var(){
 int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
                          const char *input_file_name_video, const char *output_file_name)
 {
-    const OptionDef *po;
     OptionParseContext octx;
     uint8_t error[128];
     int ret;
@@ -2363,24 +2364,9 @@ int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
 
     init_parse_context(&octx, groups, FF_ARRAY_ELEMS(groups));
 
-    if(input_file_name_audio != NULL){
-        finish_group(&octx, GROUP_INFILE, input_file_name_audio);
-        // const char *name = "aac_adtstoasc";
-        po = find_option(options, "absf");
-        if (po->name) {
-            J4A_ALOGD("po->name=%s ",po->name);
-            add_opt(&octx, po, "absf", "aac_adtstoasc");
-        }
-
-        po = find_option(options, "acodec");
-        if (po->name) {
-            J4A_ALOGD("po->name=%s ",po->name);
-            add_opt(&octx, po, "acodec", "copy");
-        }
-    }
-
 
     if(input_file_name_video != NULL){
+        const OptionDef *po;
         po = find_option(options, "r");
         if (po->name) {
             J4A_ALOGD("po->name=%s ",po->name);
@@ -2388,12 +2374,38 @@ int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
         }
 
         finish_group(&octx, GROUP_INFILE, input_file_name_video);
+    }
 
-        po = find_option(options, "vcodec");
-        if (po->name) {
-            J4A_ALOGD("po->name=%s ",po->name);
-            add_opt(&octx, po, "vcodec", "copy");
+    if(input_file_name_audio != NULL){
+        const OptionDef *po;
+        finish_group(&octx, GROUP_INFILE, input_file_name_audio);
+        // const char *name = "aac_adtstoasc";
+    }
+
+    {
+        const OptionDef *po;
+        if(input_file_name_audio != NULL) {
+            po = find_option(options, "absf");
+            if (po->name) {
+                J4A_ALOGD("po->name=%s ", po->name);
+                add_opt(&octx, po, "absf", "aac_adtstoasc");
+            }
+
+            po = find_option(options, "acodec");
+            if (po->name) {
+                J4A_ALOGD("po->name=%s ",po->name);
+                add_opt(&octx, po, "acodec", "copy");
+            }
         }
+        if(input_file_name_video != NULL) {
+            po = find_option(options, "vcodec");
+            if (po->name) {
+                J4A_ALOGD("po->name=%s ", po->name);
+                add_opt(&octx, po, "vcodec", "copy");
+            }
+        }
+
+
     }
 
 
