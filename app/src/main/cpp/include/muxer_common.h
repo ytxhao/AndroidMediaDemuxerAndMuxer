@@ -603,4 +603,8 @@ O type_transform(I in,O out);
 
 int ffmpeg_parse_options(int argc, const char *input_file_name_audio,
                          const char *input_file_name_video, const char *output_file_name);
+
+
+int ffmpeg_parse_options_test(int argc, const char *input_file_name_audio,
+                         const char *input_file_name_video, const char *output_file_name);
 #endif //ANDROIDMEDIADEMUXERANDMUXER_MUXER_COMMON_H

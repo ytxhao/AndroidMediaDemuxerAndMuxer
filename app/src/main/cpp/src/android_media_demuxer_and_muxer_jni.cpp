@@ -221,15 +221,15 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
     const char *in_filename_v = env->GetStringUTFChars(inputVideoFile, NULL);
     const char *in_filename_a = env->GetStringUTFChars(inputAudioFile, NULL);
     const char *out_filename = env->GetStringUTFChars(outputMediaFile, NULL);//Output file URL
-
+    J4A_ALOGD("avcodec_configuration=%s",avcodec_configuration());
     //av_log_set_callback(log_callback);
     avcodec_register_all();
     avfilter_register_all();
     av_register_all();
     avformat_network_init();
-    ffmpeg_parse_options(1,in_filename_a,NULL,out_filename);
+  //  ffmpeg_parse_options(1,NULL,in_filename_v,out_filename);
 
-
+    ffmpeg_parse_options_test(1,NULL,in_filename_v,out_filename);
 
 
     J4A_ALOGD( "muxer finish.\n");
