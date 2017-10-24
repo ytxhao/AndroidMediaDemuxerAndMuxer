@@ -18,6 +18,7 @@ extern "C"
 #include <libavutil/time.h>
 #include <libavutil/intreadwrite.h>
 #include <libavutil/parseutils.h>
+void av_freep_test(void *arg);
 void log_callback(void* ptr, int level, const char* fmt,va_list vl);
 
 #ifdef __cplusplus
@@ -170,9 +171,6 @@ enum forced_keyframes_const {
     FKF_NB
 };
 
-#define ABORT_ON_FLAG_EMPTY_OUTPUT (1 <<  0)
-
-extern const char *const forced_keyframes_const_names[];
 
 typedef enum {
     ENCODER_FINISHED = 1,
@@ -295,7 +293,7 @@ typedef struct OutputStream {
 
 typedef struct OutputFile {
     AVFormatContext *ctx;
-    AVDictionary *opts;
+    //AVDictionary *opts;
     int ost_index;       /* index of the first stream in output_streams */
     int64_t recording_time;  ///< desired length of the resulting file in microseconds == AV_TIME_BASE units
     int64_t start_time;      ///< start time in microseconds == AV_TIME_BASE units
@@ -306,7 +304,26 @@ typedef struct OutputFile {
     int header_written;
 } OutputFile;
 
+typedef struct FFContext{
 
+    InputStream **input_streams;
+    int        nb_input_streams;
+    InputFile   **input_files;
+    int        nb_input_files;
+
+    OutputStream **output_streams;
+    int         nb_output_streams;
+    OutputFile   **output_files;
+    int         nb_output_files;
+    int audio_volume;
+
+    AVDictionary *sws_dict;
+//    AVDictionary *swr_opts;
+//    AVDictionary *format_opts;
+//    AVDictionary *codec_opts;
+//    AVDictionary *resample_opts;
+
+}FFContext;
 
 
 template<typename T>
@@ -316,12 +333,11 @@ template<typename I, typename O>
 O type_transform(I in,O out);
 
 
-#define media_type_string av_get_media_type_string
-
 #define GROW_ARRAY(array, nb_elems)\
     array = grow_array(array, sizeof(*array), &nb_elems, nb_elems + 1)
 
 
+int open_input_file(FFContext *mFFContext,const char *filename);
 
 int ffmpeg_parse(const char *input_file_name_audio,
                          const char *input_file_name_video, const char *output_file_name);
