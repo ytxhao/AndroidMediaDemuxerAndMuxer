@@ -227,9 +227,9 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
     avfilter_register_all();
     av_register_all();
     avformat_network_init();
-  //  ffmpeg_parse_options(1,NULL,in_filename_v,out_filename);
+//    ffmpeg_parse_options(1,in_filename_a,NULL,out_filename);
 
-    ffmpeg_parse_options_test(1,NULL,in_filename_v,out_filename);
+    ffmpeg_parse_options_test(1,in_filename_a,NULL,out_filename);
 
 
     J4A_ALOGD( "muxer finish.\n");

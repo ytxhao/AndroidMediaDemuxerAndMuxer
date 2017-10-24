@@ -19,15 +19,15 @@ static int decode_interrupt_cb(void *ctx)
     return received_nb_signals > atomic_load(&transcode_init_done);
 }
 const AVIOInterruptCB int_cb = { decode_interrupt_cb, NULL };
-InputStream **input_streams;
-int        nb_input_streams;
-InputFile   **input_files;
-int        nb_input_files;
+InputStream **input_streams= NULL;
+int        nb_input_streams=0;
+InputFile   **input_files= NULL;
+int        nb_input_files=0;
 
-OutputStream **output_streams;
-int         nb_output_streams;
-OutputFile   **output_files;
-int         nb_output_files;
+OutputStream **output_streams= NULL;
+int         nb_output_streams=0;
+OutputFile   **output_files= NULL;
+int         nb_output_files=0;
 int audio_volume      = 256;
 enum OptGroup {
     GROUP_OUTFILE = 0,
@@ -39,9 +39,9 @@ static const OptionGroupDef groups[2] = {
         [GROUP_INFILE]  = { "input url",   "i",  OPT_INPUT },
 };
 
-AVDictionary *sws_dict;
-AVDictionary *swr_opts;
-AVDictionary *format_opts, *codec_opts, *resample_opts;
+AVDictionary *sws_dict= NULL;
+AVDictionary *swr_opts= NULL;
+AVDictionary *format_opts = NULL, *codec_opts= NULL, *resample_opts= NULL;
 
 static int write_packet(OutputFile *of, AVPacket *pkt, OutputStream *ost, int unqueue);
 void init_opts(void)
@@ -2345,14 +2345,30 @@ void init_var(){
 
     copy_ts           = 0;
 
-    input_streams = NULL;
+    if(input_streams){
+        free(input_streams);
+        input_streams = NULL;
+    }
+
     nb_input_streams =0;
-    input_files =NULL;
+    if(input_files){
+        free(input_files);
+        input_files = NULL;
+    }
+
     nb_input_files =0;
 
-    output_streams=NULL;
+    if(output_streams){
+        free(output_streams);
+        output_streams=NULL;
+    }
+
     nb_output_streams=0;
-    output_files=NULL;
+    if(output_files){
+        free(output_files);
+        output_files = NULL;
+    }
+
     nb_output_files=0;
     audio_volume      = 256;
 
@@ -2559,8 +2575,17 @@ static OutputStream *new_output_stream_test(AVFormatContext *oc, enum AVMediaTyp
             bsfs++;
     }
 
+
+    if (ost->nb_bitstream_filters) {
+        ost->bsf_extradata_updated = (uint8_t *) av_mallocz_array(ost->nb_bitstream_filters, sizeof(*ost->bsf_extradata_updated));
+        if (!ost->bsf_extradata_updated) {
+            av_log(NULL, AV_LOG_FATAL, "Bitstream filter memory allocation failed\n");
+            return NULL;
+        }
+    }
+
     ost->disposition = av_strdup(ost->disposition);
-    ost->max_muxing_queue_size = 128;
+    ost->max_muxing_queue_size = 32;
     ost->max_muxing_queue_size *= sizeof(AVPacket);
 
     if (oc->oformat->flags & AVFMT_GLOBALHEADER)
@@ -2843,7 +2868,7 @@ static int open_input_file_test(const char *filename){
 
     InputFile *f;
     AVFormatContext *ic;
-    AVDictionary *format_opts;
+    AVDictionary *format_opts = NULL;
     int scan_all_pmts_set = 0;
     int err, i, ret;
     ic = avformat_alloc_context();
@@ -2882,7 +2907,7 @@ static int open_input_file_test(const char *filename){
     }
 
     add_input_streams_test(ic);
-
+    J4A_ALOGD("ist test nb_input_streams=%d nb_input_files=%d codec_type=%d",nb_input_streams,nb_input_files,input_streams[nb_input_streams - 1]->dec_ctx->codec_type);
     /* dump the file content */
     av_dump_format(ic, nb_input_files, filename, 0);
     GROW_ARRAY(input_files, nb_input_files);
@@ -2954,10 +2979,48 @@ static int open_output_file_test(const char *filename){
     oc->interrupt_callback = int_cb;
 
 
-    idx = 0;
-    new_video_stream_test(oc, idx);
-//    idx = 1;
-//    new_audio_stream_test(oc, idx);
+    if (av_guess_codec(oc->oformat, NULL, filename, NULL, AVMEDIA_TYPE_VIDEO) != AV_CODEC_ID_NONE) {
+        int area = 0, idx = -1;
+        int qcr = avformat_query_codec(oc->oformat, oc->oformat->video_codec, 0);
+        for (i = 0; i < nb_input_streams; i++) {
+            int new_area;
+            ist = input_streams[i];
+            new_area = ist->st->codecpar->width * ist->st->codecpar->height + 100000000*!!ist->st->codec_info_nb_frames;
+            if((qcr!=MKTAG('A', 'P', 'I', 'C')) && (ist->st->disposition & AV_DISPOSITION_ATTACHED_PIC))
+                new_area = 1;
+            if (ist->st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+                new_area > area) {
+                if((qcr==MKTAG('A', 'P', 'I', 'C')) && !(ist->st->disposition & AV_DISPOSITION_ATTACHED_PIC))
+                    continue;
+                area = new_area;
+                idx = i;
+            }
+        }
+        if (idx >= 0) {
+
+            new_video_stream_test(oc, idx);
+            J4A_ALOGD("ost test video idx=%d nb_output_streams=%d",idx,nb_output_streams);
+        }
+    }
+
+
+    if (av_guess_codec(oc->oformat, NULL, filename, NULL, AVMEDIA_TYPE_AUDIO) != AV_CODEC_ID_NONE) {
+        int best_score = 0, idx = -1;
+        for (i = 0; i < nb_input_streams; i++) {
+            int score;
+            ist = input_streams[i];
+            score = ist->st->codecpar->channels + 100000000*!!ist->st->codec_info_nb_frames;
+            if (ist->st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
+                score > best_score) {
+                best_score = score;
+                idx = i;
+            }
+        }
+        if (idx >= 0) {
+            new_audio_stream_test(oc, idx);
+            J4A_ALOGD("ost test audio idx=%d nb_output_streams=%d",idx,nb_output_streams);
+        }
+    }
 
     if (!oc->nb_streams && !(oc->oformat->flags & AVFMT_NOSTREAMS)) {
         av_dump_format(oc, nb_output_files - 1, oc->filename, 1);
@@ -3030,6 +3093,10 @@ static int process_input_test(int file_index)
     int ret, i, j;
     int64_t duration;
     int64_t pkt_dts;
+
+    J4A_ALOGD("test process_input_test ifile=%#x",ifile);
+    J4A_ALOGD("test process_input_test ifile->ctx=%#x",ifile->ctx);
+    J4A_ALOGD("test process_input_test ifile->ctx->nb_streams=%d",ifile->ctx->nb_streams);
 
     is  = ifile->ctx;
     ret = get_input_packet(ifile, &pkt);
@@ -3233,7 +3300,7 @@ static int transcode_step_test(void)
 
     ist = input_streams[ost->source_index];
 
-
+    J4A_ALOGD("test transcode_step_test ost->source_index=%d ist->file_index=%d",ost->source_index,ist->file_index);
     ret = process_input_test(ist->file_index);
     if (ret == AVERROR(EAGAIN)) {
         if (input_files[ist->file_index]->eagain)
@@ -3330,6 +3397,7 @@ int transcode_test(void){
                                 av_err2str(AVERROR(errno)));
                     ost->logfile = NULL;
                 }
+                J4A_ALOGD("av_freep swr_opts ...");
                 av_freep(&ost->forced_kf_pts);
                 av_freep(&ost->apad);
                 av_freep(&ost->disposition);
@@ -3339,6 +3407,32 @@ int transcode_test(void){
                 av_dict_free(&ost->resample_opts);
             }
         }
+
+
+        if(format_opts){
+            av_dict_free(&format_opts);
+            format_opts = NULL;
+        }
+
+        if(swr_opts){
+            av_dict_free(&swr_opts);
+            swr_opts = NULL;
+        }
+
+        if(codec_opts){
+            av_dict_free(&codec_opts);
+            codec_opts = NULL;
+        }
+
+        if(resample_opts){
+            av_dict_free(&resample_opts);
+            resample_opts = NULL;
+        }
+
+        if(format_opts){
+            av_dict_free(&format_opts);
+            format_opts = NULL;
+        }
     }
     return ret;
 }
@@ -3347,6 +3441,7 @@ int ffmpeg_parse_options_test(int argc, const char *input_file_name_audio,
                               const char *input_file_name_video, const char *output_file_name)
 {
     init_var();
+    J4A_ALOGD("ffmpeg_parse_options_test IN");
     if(input_file_name_audio){
         open_input_file_test(input_file_name_audio);
     }
