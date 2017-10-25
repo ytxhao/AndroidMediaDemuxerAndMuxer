@@ -324,6 +324,9 @@ typedef struct FFContext{
 //    AVDictionary *codec_opts;
 //    AVDictionary *resample_opts;
 
+    volatile int received_sigterm;
+    float dts_delta_threshold   ;
+    float dts_error_threshold   ;
 }FFContext;
 
 typedef struct hls2mp4_context_t {
