@@ -57,14 +57,14 @@ T *grow_array(T *array, int elem_size, int *size, int new_size)
         return NULL;
     }
     if (*size < new_size) {
-        T *tmp = (T *) av_realloc_array(array, new_size, elem_size);
+        uint8_t *tmp = (uint8_t *) av_realloc_array(array, new_size, elem_size);
         if (!tmp) {
             J4A_ALOGD("Could not alloc buffer.\n");
             return NULL;
         }
         memset(tmp + *size*elem_size, 0, (new_size-*size) * elem_size);
         *size = new_size;
-        return tmp;
+        return (T*)tmp;
     }
     return array;
 }

@@ -13,14 +13,14 @@ T *grow_array(T *array, int elem_size, int *size, int new_size)
         return NULL;
     }
     if (*size < new_size) {
-        T *tmp = (T *) av_realloc_array(array, new_size, elem_size);
+        uint8_t *tmp = (uint8_t *) av_realloc_array((void *)array, new_size, elem_size);
         if (!tmp) {
             J4A_ALOGD("Could not alloc buffer.\n");
             return NULL;
         }
         memset(tmp + *size*elem_size, 0, (new_size-*size) * elem_size);
         *size = new_size;
-        return tmp;
+        return (T *)tmp;
     }
     return array;
 }
@@ -190,13 +190,10 @@ int open_input_file(FFContext *mFFContext,const char *filename){
 
     add_input_streams(mFFContext,ic);
 
-    /* dump the file content */
- //   av_dump_format(ic, mFFContext->nb_input_files, filename, 0);
-  //  GROW_ARRAY(mFFContext->input_files, mFFContext->nb_input_files);
-    mFFContext->nb_input_files++;
-    mFFContext->input_files = (InputFile **) av_realloc_array(mFFContext->input_files, mFFContext->nb_input_files, sizeof(*mFFContext->input_files));
-    J4A_ALOGD("mFFContext->nb_input_files=%d",mFFContext->nb_input_files);
-    J4A_ALOGD("mFFContext->input_files=%#x",mFFContext->input_files);
+
+    av_dump_format(ic, mFFContext->nb_input_files, filename, 0);
+    GROW_ARRAY(mFFContext->input_files, mFFContext->nb_input_files);
+
     f = (InputFile *) av_mallocz(sizeof(*f));
     if (!f)
         return -1;
@@ -636,27 +633,49 @@ void free_FFContext(FFContext *mFFContext){
         J4A_ALOGD("test 003 mFFContext=%#x",mFFContext);
         av_freep(&mFFContext);
         J4A_ALOGD("test 004 mFFContext=%#x",mFFContext);
+
     }
+
 }
 
-int ffmpeg_parse(const char *input_file_name_audio,
-                              const char *input_file_name_video, const char *output_file_name)
+void* ffmpeg_parse(void* arg)
 {
     FFContext *mFFContext = (FFContext *) malloc(sizeof(FFContext));
     memset(mFFContext,0, sizeof(FFContext));
+    hls2mp4_context_t* context= (hls2mp4_context_t*)arg;
+    J4A_ALOGD("avcodec_configuration=%s",avcodec_configuration());
+    avcodec_register_all();
+    avfilter_register_all();
+    av_register_all();
+    avformat_network_init();
 
     init_opts(mFFContext);
-
-    if(input_file_name_audio){
-        open_input_file(mFFContext,input_file_name_audio);
+    J4A_ALOGD("context->in_filename_a=%s",context->in_filename_a);
+    J4A_ALOGD("context->in_filename_v=%s",context->in_filename_v);
+    if(context->in_filename_a){
+        open_input_file(mFFContext,context->in_filename_a);
     }
 
-    if(input_file_name_video){
-        open_input_file(mFFContext,input_file_name_video);
+    if(context->in_filename_v){
+        open_input_file(mFFContext,context->in_filename_v);
     }
 
-    open_output_file(mFFContext,output_file_name);
+    open_output_file(mFFContext,context->out_filename);
+
     free_FFContext(mFFContext);
 
-    return 0;
+    if(context->in_filename_v) {
+        free(context->in_filename_v);
+        context->in_filename_v = NULL;
+    }
+    if(context->in_filename_a) {
+        free(context->in_filename_a);
+        context->in_filename_a = NULL;
+    }
+    if(context->out_filename) {
+        free(context->out_filename);
+        context->out_filename = NULL;
+    }
+
+    return NULL;
 }

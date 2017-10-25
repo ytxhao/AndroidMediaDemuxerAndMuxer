@@ -18,9 +18,10 @@ extern "C"
 #include <libavutil/time.h>
 #include <libavutil/intreadwrite.h>
 #include <libavutil/parseutils.h>
+#include <pthread.h>
 void av_freep_test(void *arg);
 void log_callback(void* ptr, int level, const char* fmt,va_list vl);
-
+void* ffmpeg_parse(void* arg);
 #ifdef __cplusplus
 };
 #endif
@@ -325,6 +326,12 @@ typedef struct FFContext{
 
 }FFContext;
 
+typedef struct hls2mp4_context_t {
+     char *in_filename_v;
+     char *in_filename_a;
+     char *out_filename;
+} hls2mp4_context_t;
+
 
 template<typename T>
 T *grow_array(T *array, int elem_size, int *size, int new_size);
@@ -339,6 +346,5 @@ O type_transform(I in,O out);
 
 int open_input_file(FFContext *mFFContext,const char *filename);
 
-int ffmpeg_parse(const char *input_file_name_audio,
-                         const char *input_file_name_video, const char *output_file_name);
+
 #endif //ANDROIDMEDIADEMUXERANDMUXER_MUXER_COMMON_H

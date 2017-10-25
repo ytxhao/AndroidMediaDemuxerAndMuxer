@@ -90,13 +90,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 }).start();
                 break;
             case R.id.btMuxer:
-
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        mMediaUtils.muxer(INPUT_MUXER_VEDIO_FILE,INPUT_MUXER_AUDIO_FILE,OUTPUT_MUXER_MEDIA_FILE);
-                    }
-                }).start();
+                mMediaUtils.muxer(INPUT_MUXER_VEDIO_FILE,INPUT_MUXER_AUDIO_FILE,OUTPUT_MUXER_MEDIA_FILE);
                 break;
         }
 
