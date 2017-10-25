@@ -8,6 +8,37 @@ extern "C"
 {
 #endif
 #include <libavformat/avformat.h>
+#include <libavutil/fifo.h>
+
+typedef struct InputStream {
+    AVStream *st;
+    AVCodecContext *dec_ctx;
+    AVCodec *dec;
+    int64_t       next_dts;
+    int64_t       dts;
+
+    int64_t       next_pts;
+    int64_t       pts;
+    AVRational framerate;               /* framerate forced with -r */
+} InputStream;
+
+
+typedef struct OutputStream {
+    AVStream *st;
+    AVCodecContext *enc_ctx;
+    AVCodecParameters *ref_par; /* associated input codec parameters with encoders options applied */
+    AVCodec *enc;
+    uint8_t *bsf_extradata_updated;
+    AVBSFContext *bsf_ctx;
+    int max_muxing_queue_size;
+    AVFifoBuffer *muxing_queue;
+    /* video only */
+    AVRational frame_rate;
+    AVCodecParserContext *parser;
+    AVCodecContext       *parser_avctx;
+    AVRational mux_timebase;
+    int finished;
+} OutputStream;
 
 void log_callback(void* ptr, int level, const char* fmt,va_list vl);
 
@@ -29,211 +60,49 @@ void log_callback(void* ptr, int level, const char* fmt,va_list vl);
 #define J4A_VLOGI(...)  __android_log_vprint(ANDROID_LOG_INFO,      J4A_LOG_TAG, __VA_ARGS__)
 #define J4A_VLOGW(...)  __android_log_vprint(ANDROID_LOG_WARN,      J4A_LOG_TAG, __VA_ARGS__)
 #define J4A_VLOGE(...)  __android_log_vprint(ANDROID_LOG_ERROR,     J4A_LOG_TAG, __VA_ARGS__)
-/*
-FIX: H.264 in some container format (FLV, MP4, MKV etc.) need
-"h264_mp4toannexb" bitstream filter (BSF)
-  *Add SPS,PPS in front of IDR frame
-  *Add start code ("0,0,0,1") in front of NALU
-H.264 in some container (MPEG2TS) don't need this BSF.
-*/
-//'1': Use H.264 Bitstream Filter
-#define USE_H264BSF 0
-
-/*
-FIX:AAC in some container format (FLV, MP4, MKV etc.) need
-"aac_adtstoasc" bitstream filter (BSF)
-*/
-//'1': Use AAC Bitstream Filter
-#define USE_AACBSF 1
 
 
 JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_demuxer
         (JNIEnv *env, jobject obj, jstring inputFile,jstring outputVideoFile,jstring outputAudioFile)
 {
 
-    AVOutputFormat *ofmt_a = NULL,*ofmt_v = NULL;
-    //（Input AVFormatContext and Output AVFormatContext）
-    AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx_a = NULL, *ofmt_ctx_v = NULL;
-    AVPacket pkt;
-    int ret, i;
-    int videoindex=-1,audioindex=-1;
-    int frame_index=0;
-
-    const char *in_filename  = env->GetStringUTFChars(inputFile, NULL);//Input file URL
-    //char *in_filename  = "cuc_ieschool.mkv";
-    const char *out_filename_v = env->GetStringUTFChars(outputVideoFile, NULL);//Output file URL
-    //char *out_filename_a = "cuc_ieschool.mp3";
-    const char *out_filename_a =  env->GetStringUTFChars(outputAudioFile, NULL);;
-    AVBitStreamFilterContext* h264bsfc = NULL;
-    av_register_all();
-    //Input
-    if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
-        J4A_ALOGD( "Could not open input file.");
-        goto end;
-    }
-    if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
-        J4A_ALOGD( "Failed to retrieve input stream information");
-        goto end;
-    }
-
-    //Output
-    avformat_alloc_output_context2(&ofmt_ctx_v, NULL, NULL, out_filename_v);
-    if (!ofmt_ctx_v) {
-        J4A_ALOGD( "Could not create output context\n");
-        ret = AVERROR_UNKNOWN;
-        goto end;
-    }
-    ofmt_v = ofmt_ctx_v->oformat;
-
-    avformat_alloc_output_context2(&ofmt_ctx_a, NULL, NULL, out_filename_a);
-    if (!ofmt_ctx_a) {
-        J4A_ALOGD( "Could not create output context\n");
-        ret = AVERROR_UNKNOWN;
-        goto end;
-    }
-    ofmt_a = ofmt_ctx_a->oformat;
-
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
-        //Create output AVStream according to input AVStream
-        AVFormatContext *ofmt_ctx;
-        AVStream *in_stream = ifmt_ctx->streams[i];
-        AVStream *out_stream = NULL;
-
-        if(ifmt_ctx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO){
-            videoindex=i;
-            out_stream=avformat_new_stream(ofmt_ctx_v, in_stream->codec->codec);
-            ofmt_ctx=ofmt_ctx_v;
-        }else if(ifmt_ctx->streams[i]->codec->codec_type==AVMEDIA_TYPE_AUDIO){
-            audioindex=i;
-            out_stream=avformat_new_stream(ofmt_ctx_a, in_stream->codec->codec);
-            ofmt_ctx=ofmt_ctx_a;
-        }else{
-            break;
-        }
-
-        if (!out_stream) {
-            J4A_ALOGD( "Failed allocating output stream\n");
-            ret = AVERROR_UNKNOWN;
-            goto end;
-        }
-        //Copy the settings of AVCodecContext
-        if (avcodec_copy_context(out_stream->codec, in_stream->codec) < 0) {
-            J4A_ALOGD( "Failed to copy context from input to output stream codec context\n");
-            goto end;
-        }
-        out_stream->codec->codec_tag = 0;
-
-        if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-            out_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
-    }
-
-    //Dump Format------------------
-    J4A_ALOGD("\n==============Input Video=============\n");
-    av_dump_format(ifmt_ctx, 0, in_filename, 0);
-    J4A_ALOGD("\n==============Output Video============\n");
-    av_dump_format(ofmt_ctx_v, 0, out_filename_v, 1);
-    J4A_ALOGD("\n==============Output Audio============\n");
-    av_dump_format(ofmt_ctx_a, 0, out_filename_a, 1);
-    J4A_ALOGD("\n======================================\n");
-    //Open output file
-    if (!(ofmt_v->flags & AVFMT_NOFILE)) {
-        if (avio_open(&ofmt_ctx_v->pb, out_filename_v, AVIO_FLAG_WRITE) < 0) {
-            J4A_ALOGD( "Could not open output file '%s'", out_filename_v);
-            goto end;
-        }
-    }
-
-    if (!(ofmt_a->flags & AVFMT_NOFILE)) {
-        if (avio_open(&ofmt_ctx_a->pb, out_filename_a, AVIO_FLAG_WRITE) < 0) {
-            J4A_ALOGD( "Could not open output file '%s'", out_filename_a);
-            goto end;
-        }
-    }
-
-    //Write file header
-    if (avformat_write_header(ofmt_ctx_v, NULL) < 0) {
-        J4A_ALOGD( "Error occurred when opening video output file\n");
-        goto end;
-    }
-    if (avformat_write_header(ofmt_ctx_a, NULL) < 0) {
-        J4A_ALOGD( "Error occurred when opening audio output file\n");
-        goto end;
-    }
-
-#if USE_H264BSF
-    h264bsfc =  av_bitstream_filter_init("h264_mp4toannexb");
-#endif
-
-    while (1) {
-        AVFormatContext *ofmt_ctx;
-        AVStream *in_stream, *out_stream;
-        //Get an AVPacket
-        if (av_read_frame(ifmt_ctx, &pkt) < 0)
-            break;
-        in_stream  = ifmt_ctx->streams[pkt.stream_index];
-
-
-        if(pkt.stream_index==videoindex){
-            out_stream = ofmt_ctx_v->streams[0];
-            ofmt_ctx=ofmt_ctx_v;
-            J4A_ALOGD("Write Video Packet. size:%d\tpts:%lld\n",pkt.size,pkt.pts);
-#if USE_H264BSF
-            av_bitstream_filter_filter(h264bsfc, in_stream->codec, NULL, &pkt.data, &pkt.size, pkt.data, pkt.size, 0);
-#endif
-        }else if(pkt.stream_index==audioindex){
-            out_stream = ofmt_ctx_a->streams[0];
-            ofmt_ctx=ofmt_ctx_a;
-            J4A_ALOGD("Write Audio Packet. size:%d\tpts:%lld\n",pkt.size,pkt.pts);
-        }else{
-            continue;
-        }
-
-
-        //Convert PTS/DTS
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-        pkt.pos = -1;
-        pkt.stream_index=0;
-        //Write
-        if (av_interleaved_write_frame(ofmt_ctx, &pkt) < 0) {
-            J4A_ALOGD( "Error muxing packet\n");
-            break;
-        }
-        //J4A_ALOGD("Write %8d frames to output file\n",frame_index);
-        av_free_packet(&pkt);
-        frame_index++;
-    }
-
-#if USE_H264BSF
-    av_bitstream_filter_close(h264bsfc);
-#endif
-
-    //Write file trailer
-    av_write_trailer(ofmt_ctx_a);
-    av_write_trailer(ofmt_ctx_v);
-    end:
-    avformat_close_input(&ifmt_ctx);
-    /* close output */
-    if (ofmt_ctx_a && !(ofmt_a->flags & AVFMT_NOFILE))
-        avio_close(ofmt_ctx_a->pb);
-
-    if (ofmt_ctx_v && !(ofmt_v->flags & AVFMT_NOFILE))
-        avio_close(ofmt_ctx_v->pb);
-
-    avformat_free_context(ofmt_ctx_a);
-    avformat_free_context(ofmt_ctx_v);
-
-
-    if (ret < 0 && ret != AVERROR_EOF) {
-        J4A_ALOGD( "Error occurred.\n");
-        return -1;
-    }
-    J4A_ALOGD( "Demuxer finish.\n");
     return 0;
 }
 
+static void output_packet_filter(AVStream *out_stream,uint8_t *bsf_extradata_updated, AVBSFContext *bsf_ctx, AVPacket *pkt){
+    int idx;
+    int ret;
+    ret = av_bsf_send_packet(bsf_ctx, pkt);
+    if (ret < 0)
+        goto finish;
+    idx = 1;
+    while (idx) {
 
+        ret = av_bsf_receive_packet(bsf_ctx, pkt);
+        if (ret == AVERROR(EAGAIN)) {
+            ret = 0;
+            idx--;
+            continue;
+        } else if (ret < 0){
+            goto finish;
+        }
+
+        if (!(bsf_extradata_updated[idx - 1] & 1)) {
+            ret = avcodec_parameters_copy(out_stream->codecpar, bsf_ctx->par_out);
+            if (ret < 0)
+                goto finish;
+            bsf_extradata_updated[idx - 1] |= 1;
+        }
+
+
+    }
+
+    finish:
+    if (ret < 0 && ret != AVERROR_EOF) {
+        J4A_ALOGE("Error applying bitstream filters to an output packet for stream");
+
+    }
+}
 
 void log_callback(void* ptr, int level, const char* fmt,va_list vl)
 {
@@ -244,9 +113,10 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
         (JNIEnv *env, jobject obj, jstring inputVideoFile, jstring inputAudioFile, jstring outputMediaFile)
 {
     uint8_t error[128];
-
+    InputStream ist;
+    OutputStream ost;
     AVOutputFormat *ofmt = NULL;
-    //Input AVFormatContext and Output AVFormatContext
+
     AVFormatContext *ifmt_ctx_v = NULL, *ifmt_ctx_a = NULL,*ofmt_ctx = NULL;
     AVPacket pkt;
     int ret, i;
@@ -254,35 +124,31 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
     int audioindex_a=-1,audioindex_out=-1;
     int frame_index=0;
     int64_t cur_pts_v=0,cur_pts_a=0;
-    AVBitStreamFilterContext* h264bsfc = NULL;
-    AVBitStreamFilterContext* aacbsfc = NULL;
-    //const char *in_filename_v = "cuc_ieschool.ts";//Input file URL
+
     const char *in_filename_v = env->GetStringUTFChars(inputVideoFile, NULL);
-    //const char *in_filename_a = "cuc_ieschool.mp3";
-    //const char *in_filename_a = "gowest.m4a";
-    //const char *in_filename_a = "gowest.aac";
+
     const char *in_filename_a = env->GetStringUTFChars(inputAudioFile, NULL);
 
     const char *out_filename = env->GetStringUTFChars(outputMediaFile, NULL);//Output file URL
+    memset(&ist,0, sizeof(InputStream));
+    memset(&ost,0, sizeof(OutputStream));
+    J4A_ALOGD("avcodec_configuration=%s",avcodec_configuration());
     av_register_all();
     av_log_set_callback(log_callback);
     //Input
     J4A_ALOGD( "in_filename_v=%s in_filename_a=%s",in_filename_v,in_filename_a);
- //   J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
- //   J4A_ALOGD("ytxhao test video time_base.num=%d,time_base.den=%d",ifmt_ctx_v->streams[0]->time_base.num,ifmt_ctx_v->streams[0]->time_base.den);
+
     if ((ret = avformat_open_input(&ifmt_ctx_v, in_filename_v, 0, 0)) < 0) {
         av_strerror(ret, (char *) error, sizeof(error));
         J4A_ALOGD( "Could not open input file ret=%d error=%s",ret,error);
         goto end;
     }
-    J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
-    J4A_ALOGD("ytxhao test video time_base.num=%d,time_base.den=%d",ifmt_ctx_v->streams[0]->time_base.num,ifmt_ctx_v->streams[0]->time_base.den);
+
     if ((ret = avformat_find_stream_info(ifmt_ctx_v, 0)) < 0) {
         J4A_ALOGD( "Failed to retrieve input stream information");
         goto end;
     }
-    J4A_ALOGD("ytxhao test r_frame_rate.num=%d,r_frame_rate.den=%d",ifmt_ctx_v->streams[0]->r_frame_rate.num,ifmt_ctx_v->streams[0]->r_frame_rate.den);
-    J4A_ALOGD("ytxhao test video time_base.num=%d,time_base.den=%d",ifmt_ctx_v->streams[0]->time_base.num,ifmt_ctx_v->streams[0]->time_base.den);
+
     if ((ret = avformat_open_input(&ifmt_ctx_a, in_filename_a, 0, 0)) < 0) {
         J4A_ALOGD( "Could not open input file ");
         goto end;
@@ -304,165 +170,95 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
     }
     ofmt = ofmt_ctx->oformat;
 
-    for (i = 0; i < ifmt_ctx_v->nb_streams; i++) {
-        //Create output AVStream according to input AVStream
-        if(ifmt_ctx_v->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_VIDEO){
-            AVStream *in_stream = ifmt_ctx_v->streams[i];
-
-            AVStream *out_stream = avformat_new_stream(ofmt_ctx, NULL);
-            AVCodecContext *dec_ctx = avcodec_alloc_context3(avcodec_find_decoder(in_stream->codec->codec_id));
-            avcodec_copy_context(dec_ctx, in_stream->codec);
-            videoindex_v=i;
-            if (!out_stream) {
-                J4A_ALOGD( "Failed allocating output stream\n");
-                ret = AVERROR_UNKNOWN;
-                goto end;
-            }
-            AVCodecContext *pCodecCtx = out_stream->codec;
-            videoindex_out=out_stream->index;
-
-
-            pCodecCtx->codec_type = dec_ctx->codec_type;
-            pCodecCtx->codec_id = dec_ctx->codec_id;
-            pCodecCtx->codec_tag = dec_ctx->codec_tag;
-            pCodecCtx->bit_rate       = dec_ctx->bit_rate;
-            pCodecCtx->rc_max_rate    = dec_ctx->rc_max_rate;
-            pCodecCtx->rc_buffer_size = dec_ctx->rc_buffer_size;
-            pCodecCtx->field_order    = dec_ctx->field_order;
-            pCodecCtx->extradata_size= dec_ctx->extradata_size;
-            pCodecCtx->bits_per_coded_sample  = dec_ctx->bits_per_coded_sample;
-            pCodecCtx->time_base = in_stream->time_base;
-
-            out_stream->disposition = in_stream->disposition ;
-
-            pCodecCtx->bits_per_raw_sample = dec_ctx->bits_per_raw_sample;
-            //复制AVCodecContext的设置（Copy the settings of AVCodecContext）
-
-            if(in_stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO){
-                pCodecCtx->channel_layout     = in_stream->codecpar->channel_layout;
-                pCodecCtx->sample_rate        = in_stream->codecpar->sample_rate;
-                pCodecCtx->channels           = in_stream->codecpar->channels;
-                pCodecCtx->frame_size         = in_stream->codecpar->frame_size;
-                pCodecCtx->audio_service_type = in_stream->codec->audio_service_type;
-                pCodecCtx->block_align        = in_stream->codecpar->block_align;
-                pCodecCtx->initial_padding    = in_stream->codec->delay;
-                pCodecCtx->profile            = in_stream->codecpar->profile;
-            }else{
-                pCodecCtx->pix_fmt            = dec_ctx->pix_fmt;
-                pCodecCtx->colorspace         = dec_ctx->colorspace;
-                pCodecCtx->color_range        = in_stream->codecpar->color_range;
-                pCodecCtx->color_primaries    = in_stream->codecpar->color_primaries;
-                pCodecCtx->color_trc          = in_stream->codecpar->color_trc;
-                pCodecCtx->width              = in_stream->codecpar->width;
-                pCodecCtx->height             = in_stream->codecpar->height;
-                pCodecCtx->has_b_frames       = in_stream->codec->has_b_frames;
-            }
-            out_stream->avg_frame_rate = in_stream->avg_frame_rate;
-            out_stream->r_frame_rate = in_stream->r_frame_rate;
-            //ret = avcodec_parameters_from_context(out_stream->codecpar,pCodecCtx);
-
-            uint64_t extra_size;
-            extra_size = (uint64_t)dec_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
-            if(dec_ctx->extradata_size){
-                pCodecCtx->extradata  = (uint8_t *) av_mallocz(extra_size);
-                if (!pCodecCtx->extradata) {
-                    J4A_ALOGD("pCodecCtx->extradata is null");
-                }
-                memcpy(pCodecCtx->extradata, dec_ctx->extradata, dec_ctx->extradata_size);
-            }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",pCodecCtx->extradata_size,pCodecCtx->extradata,pCodecCtx->codec_type);
-            for(int i=0;i<pCodecCtx->extradata_size;i++){
-                J4A_ALOGD("extradata[%d]=%#x",i,pCodecCtx->extradata[i]);
-            }
-            out_stream->codecpar->codec_tag = 0;
-            if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-                pCodecCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
-            break;
-        }
-    }
-
     for (i = 0; i < ifmt_ctx_a->nb_streams; i++) {
         //Create output AVStream according to input AVStream
         if(ifmt_ctx_a->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_AUDIO){
-            AVStream *in_stream = ifmt_ctx_a->streams[i];
-            AVStream *out_stream = avformat_new_stream(ofmt_ctx, in_stream->codec->codec);
-            AVCodecContext *dec_ctx = avcodec_alloc_context3(avcodec_find_decoder(in_stream->codec->codec_id));
-            avcodec_copy_context(dec_ctx, in_stream->codec);
-            audioindex_a=i;
-            if (!out_stream) {
-                J4A_ALOGD( "Failed allocating output stream\n");
-                ret = AVERROR_UNKNOWN;
-                goto end;
+            AVStream *st = ifmt_ctx_a->streams[i];
+            AVCodecParameters *par = st->codecpar;
+            ist.st = st;
+            ist.dec = avcodec_find_decoder(st->codecpar->codec_id);
+            ist.dec_ctx = avcodec_alloc_context3(ist.dec);
+            avcodec_parameters_to_context(ist.dec_ctx, par);
+            ist.dec_ctx->channel_layout = (uint64_t) av_get_default_channel_layout(ist.dec_ctx->channels);
+
+            ret = avcodec_parameters_from_context(par, ist.dec_ctx);
+            if (ret < 0) {
+                J4A_ALOGE( "Error initializing the decoder context.\n");
+                return -1;
             }
-            AVCodecContext *pCodecCtx = out_stream->codec;
-            audioindex_out=out_stream->index;
 
-            pCodecCtx->codec_type = dec_ctx->codec_type;
-            pCodecCtx->codec_id = dec_ctx->codec_id;
-            pCodecCtx->codec_tag = dec_ctx->codec_tag;
-            pCodecCtx->bit_rate       = dec_ctx->bit_rate;
-            pCodecCtx->rc_max_rate    = dec_ctx->rc_max_rate;
-            pCodecCtx->rc_buffer_size = dec_ctx->rc_buffer_size;
-            pCodecCtx->field_order    = dec_ctx->field_order;
-            pCodecCtx->extradata_size= dec_ctx->extradata_size;
-            pCodecCtx->bits_per_coded_sample  = dec_ctx->bits_per_coded_sample;
-            pCodecCtx->time_base = in_stream->time_base;
-
-            out_stream->disposition = in_stream->disposition ;
-
-            pCodecCtx->bits_per_raw_sample = dec_ctx->bits_per_raw_sample;
-            //复制AVCodecContext的设置（Copy the settings of AVCodecContext）
-
-            if(in_stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO){
-                pCodecCtx->channel_layout     = dec_ctx->channel_layout;
-                pCodecCtx->sample_rate        = dec_ctx->sample_rate;
-                pCodecCtx->channels           = dec_ctx->channels;
-                pCodecCtx->frame_size         = dec_ctx->frame_size;
-                pCodecCtx->audio_service_type = dec_ctx->audio_service_type;
-                pCodecCtx->block_align        = dec_ctx->block_align;
-                pCodecCtx->initial_padding    = dec_ctx->delay;
-                pCodecCtx->profile            = dec_ctx->profile;
-            }else{
-                pCodecCtx->pix_fmt            = dec_ctx->pix_fmt;
-                pCodecCtx->colorspace         = dec_ctx->colorspace;
-                pCodecCtx->color_range        = dec_ctx->color_range;
-                pCodecCtx->color_primaries    = dec_ctx->color_primaries;
-                pCodecCtx->color_trc          = dec_ctx->color_trc;
-                pCodecCtx->width              = dec_ctx->width;
-                pCodecCtx->height             = dec_ctx->height;
-                pCodecCtx->has_b_frames       = dec_ctx->has_b_frames;
-            }
-            out_stream->avg_frame_rate = in_stream->avg_frame_rate;
-            out_stream->r_frame_rate = in_stream->r_frame_rate;
-            //ret = avcodec_parameters_from_context(out_stream->codecpar,pCodecCtx);
-
-            uint64_t extra_size;
-            extra_size = (uint64_t)dec_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE;
-            if(dec_ctx->extradata_size){
-                pCodecCtx->extradata  = (uint8_t *) av_mallocz(extra_size);
-                if (!pCodecCtx->extradata) {
-                    J4A_ALOGD("pCodecCtx->extradata is null");
-                }
-                memcpy(pCodecCtx->extradata, dec_ctx->extradata, dec_ctx->extradata_size);
-            }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",pCodecCtx->extradata_size,pCodecCtx->extradata,pCodecCtx->codec_type);
-            for(int i=0;i<out_stream->codecpar->extradata_size;i++){
-                J4A_ALOGD("extradata[%d]=%#x",i,out_stream->codecpar->extradata[i]);
-            }
-            J4A_ALOGD("extradata_size=%d extradata=%#x codec_type=%d",dec_ctx->extradata_size,dec_ctx->extradata,dec_ctx->codec_type);
-            out_stream->codecpar->codec_tag = 0;
-            if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-                pCodecCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
-
-            break;
         }
     }
 
-    J4A_ALOGD("==========Output Information 0==========\n");
-    av_dump_format(ofmt_ctx, 0, out_filename, 1);
+    {
+        const AVBitStreamFilter *filter;
+        AVStream *st = avformat_new_stream(ofmt_ctx, NULL);
+        ost.st  = st;
+        st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+        ost.enc = NULL;
+        ost.enc_ctx = avcodec_alloc_context3(ost.enc);
+        ost.enc_ctx->codec_type = AVMEDIA_TYPE_AUDIO;
+        ost.ref_par = avcodec_parameters_alloc();
+        filter = av_bsf_get_by_name("aac_adtstoasc");
+        ret = av_bsf_alloc(filter, &ost.bsf_ctx);
+        J4A_ALOGD("sizeof(*ost.bsf_extradata_updated)=%d",sizeof(*ost.bsf_extradata_updated));
+        ost.bsf_extradata_updated = (uint8_t *) av_mallocz_array(1, sizeof(*ost.bsf_extradata_updated));
+        ost.max_muxing_queue_size = 32;
+        ost.max_muxing_queue_size *= sizeof(AVPacket);
 
-    J4A_ALOGD("yuhaoo test pix_fmt=%d,w=%d,h=%d",ofmt_ctx->streams[videoindex_v]->codec->pix_fmt,ofmt_ctx->streams[videoindex_v]->codec->width,ofmt_ctx->streams[videoindex_v]->codec->height);
-    J4A_ALOGD("======================================\n");
+        if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
+            ost.enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+        ost.muxing_queue = av_fifo_alloc(8 * sizeof(AVPacket));
+    }
+
+    ist.next_pts = AV_NOPTS_VALUE;
+    ist.next_dts = AV_NOPTS_VALUE;
+
+
+    {
+        //streamcopy
+        AVCodecParameters *par_dst = ost.st->codecpar;
+        AVCodecParameters *par_src = ost.ref_par;
+        AVRational sar;
+        ret = avcodec_parameters_to_context(ost.enc_ctx, ist.st->codecpar);
+        avcodec_parameters_from_context(par_src, ost.enc_ctx);
+        ret = avcodec_parameters_copy(par_dst, par_src);
+        par_dst->codec_tag = 0;
+        if (!ost.frame_rate.num){
+            ost.frame_rate = ist.framerate;
+        }
+        ost.st->avg_frame_rate = ost.frame_rate;
+        // copy timebase while removing common factors
+        if (ost.st->time_base.num <= 0 || ost.st->time_base.den <= 0)
+            ost.st->time_base = av_add_q(av_stream_get_codec_timebase(ost.st), (AVRational){0, 1});
+
+        if (ost.st->duration <= 0 && ist.st->duration > 0)
+            ost.st->duration = av_rescale_q(ist.st->duration, ist.st->time_base, ost.st->time_base);
+
+        // copy disposition
+        ost.st->disposition = ist.st->disposition;
+        ost.parser = av_parser_init(par_dst->codec_id);
+        ost.parser_avctx = avcodec_alloc_context3(NULL);
+        if((par_dst->block_align == 1 || par_dst->block_align == 1152 || par_dst->block_align == 576) && par_dst->codec_id == AV_CODEC_ID_MP3)
+            par_dst->block_align= 0;
+        if(par_dst->codec_id == AV_CODEC_ID_AC3)
+            par_dst->block_align= 0;
+
+        ost.mux_timebase = ist.st->time_base;
+        ret = avcodec_parameters_to_context(ost.parser_avctx, ost.st->codecpar);
+    }
+
+    {
+        AVBSFContext *ctx;
+        ctx = ost.bsf_ctx;
+        ret = avcodec_parameters_copy(ctx->par_in, ost.st->codecpar);
+        ctx->time_base_in = ost.st->time_base;
+        ret = av_bsf_init(ctx);
+        ret = avcodec_parameters_copy(ost.st->codecpar, ctx->par_out);
+        ost.st->time_base = ctx->time_base_out;
+    }
+
     //Open output file
     if (!(ofmt->flags & AVFMT_NOFILE)) {
         if (avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE) < 0) {
@@ -470,145 +266,71 @@ JNIEXPORT jint JNICALL Java_ican_ytx_com_andoridmediademuxerandmuxer_MediaUtils_
             goto end;
         }
     }
+
+    J4A_ALOGD("==========Output Information ==========\n");
+    av_dump_format(ofmt_ctx, 0, out_filename, 1);
+    J4A_ALOGD("======================================\n");
+    {
+        if (!av_fifo_size(ost.muxing_queue))
+            ost.mux_timebase = ost.st->time_base;
+    }
     //Write file header
     if (avformat_write_header(ofmt_ctx, NULL) < 0) {
         J4A_ALOGD( "Error occurred when opening output file\n");
         goto end;
     }
 
-    J4A_ALOGD("==========Output Information 1==========\n");
-    av_dump_format(ofmt_ctx, 0, out_filename, 1);
-
-    J4A_ALOGD("yuhaoo test pix_fmt=%d,w=%d,h=%d",ofmt_ctx->streams[videoindex_v]->codec->pix_fmt,ofmt_ctx->streams[videoindex_v]->codec->width,ofmt_ctx->streams[videoindex_v]->codec->height);
-    J4A_ALOGD("======================================\n");
-    //FIX
-#if USE_H264BSF
-     h264bsfc =  av_bitstream_filter_init("h264_mp4toannexb");
-#endif
-#if USE_AACBSF
-    aacbsfc =  av_bitstream_filter_init("aac_adtstoasc");
-#endif
-
-    while (1) {
-        AVFormatContext *ifmt_ctx;
-        int stream_index=0;
-        AVStream *in_stream, *out_stream;
-
-        //Get an AVPacket
-        if(av_compare_ts(cur_pts_v,ifmt_ctx_v->streams[videoindex_v]->time_base,cur_pts_a,ifmt_ctx_a->streams[audioindex_a]->time_base) <= 0){
-            ifmt_ctx=ifmt_ctx_v;
-            stream_index=videoindex_out;
-
-            if(av_read_frame(ifmt_ctx, &pkt) >= 0){
-                do{
-                    in_stream  = ifmt_ctx->streams[pkt.stream_index];
-                    out_stream = ofmt_ctx->streams[stream_index];
-
-                    if(pkt.stream_index==videoindex_v){
-                        //FIX：No PTS (Example: Raw H.264)
-                        //Simple Write PTS
-                        if(pkt.pts==AV_NOPTS_VALUE){
-                            //Write PTS
-                            AVRational time_base1=in_stream->time_base;
-                            AVRational time_base2=out_stream->time_base;
-                            //Duration between 2 frames (us)
-                        //    J4A_ALOGD("time_base1.num=%d,time_base1.den=%d",time_base1.num,time_base1.den);
-                        //    J4A_ALOGD("time_base2.num=%d,time_base2.den=%d",time_base2.num,time_base2.den);
-                        //    J4A_ALOGD("r_frame_rate.num=%d,r_frame_rate.den=%d",in_stream->r_frame_rate.num,in_stream->r_frame_rate.den);
-                            int64_t calc_duration=(double)AV_TIME_BASE/av_q2d(in_stream->r_frame_rate);
-                            //Parameters
-                            pkt.pts=(double)(frame_index*calc_duration)/(double)(av_q2d(time_base1)*AV_TIME_BASE);
-                            pkt.dts=pkt.pts;
-                            pkt.duration=(double)calc_duration/(double)(av_q2d(time_base1)*AV_TIME_BASE);
-                            frame_index++;
-                          //  J4A_ALOGD("Packet video . size:%5d\tpts:%lld\n",pkt.size,pkt.pts);
-                        }
-
-                        cur_pts_v=pkt.pts;
-                        break;
-                    }
-                }while(av_read_frame(ifmt_ctx, &pkt) >= 0);
-            }else{
-                break;
-            }
-        }else{
-            ifmt_ctx=ifmt_ctx_a;
-            stream_index=audioindex_out;
-            if(av_read_frame(ifmt_ctx, &pkt) >= 0){
-                do{
-                    in_stream  = ifmt_ctx->streams[pkt.stream_index];
-                    out_stream = ofmt_ctx->streams[stream_index];
-
-                    if(pkt.stream_index==audioindex_a){
-
-                        //FIX：No PTS
-                        //Simple Write PTS
-                        if(pkt.pts==AV_NOPTS_VALUE){
-                            //Write PTS
-                            AVRational time_base1=in_stream->time_base;
-                            //Duration between 2 frames (us)
-                            int64_t calc_duration=(double)AV_TIME_BASE/av_q2d(in_stream->r_frame_rate);
-                            //Parameters
-                            pkt.pts=(double)(frame_index*calc_duration)/(double)(av_q2d(time_base1)*AV_TIME_BASE);
-                            pkt.dts=pkt.pts;
-                            pkt.duration=(double)calc_duration/(double)(av_q2d(time_base1)*AV_TIME_BASE);
-                            frame_index++;
-
-
-                        }
-                        cur_pts_a=pkt.pts;
-                      //  J4A_ALOGD("Write 1 Packet audio in_stream->codecpar->frame_size=%d pkt size=%d r_frame_rate.num=%d  r_frame_rate.den=%d pkt.pts=%lld",
-                      //            in_stream->codecpar->frame_size,pkt.size,in_stream->r_frame_rate.num,in_stream->r_frame_rate.den,pkt.pts);
-                        break;
-                    }
-                }while(av_read_frame(ifmt_ctx, &pkt) >= 0);
-            }else{
-                break;
-            }
-
-        }
-
-        //FIX:Bitstream Filter
-#if USE_H264BSF
-        av_bitstream_filter_filter(h264bsfc, in_stream->codec, NULL, &pkt.data, &pkt.size, pkt.data, pkt.size, 0);
-#endif
-
-
-#if USE_AACBSF
-        av_bitstream_filter_filter(aacbsfc, out_stream->codec, NULL, &pkt.data, &pkt.size, pkt.data, pkt.size, 0);
-#endif
-
-
-        //Convert PTS/DTS
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-        pkt.pos = -1;
-        pkt.stream_index=stream_index;
-
-        if( pkt.stream_index == audioindex_out){
-//            J4A_ALOGD("Write 1 Packet in_stream->time_base.num=%d in_stream->time_base.den=%d",in_stream->time_base.num,in_stream->time_base.den);
-//            J4A_ALOGD("Write 1 Packet out_stream->time_base.num=%d out_stream->time_base.den=%d",out_stream->time_base.num,out_stream->time_base.den);
-//            J4A_ALOGD("Write 1 Packet stream_index=%d size:%5d\tpts:%lld\n",stream_index,pkt.size,pkt.pts);
-        }
-
-        //Write
-        if (av_interleaved_write_frame(ofmt_ctx, &pkt) < 0) {
-            J4A_ALOGD( "Error muxing packet\n");
+    while (true) {
+        int64_t duration;
+        AVRational time_base_tmp;
+        AVPacket pkt;
+        int64_t pkt_dts;
+        time_base_tmp.den=1;
+        time_base_tmp.num=1;
+        if(ost.finished || (ofmt_ctx->pb && avio_tell(ofmt_ctx->pb) >=UINT64_MAX)){
             break;
         }
-        av_free_packet(&pkt);
 
+        ret = av_read_frame(ifmt_ctx_a, &pkt);
+        if (ret == AVERROR(EAGAIN)) {
+            continue;
+        }
+        if(ret < 0){
+            if (ret != AVERROR_EOF) {
+                 break;
+            }
+            break;
+        }
+        output_packet_filter(ost.st,ost.bsf_extradata_updated,ost.bsf_ctx,&pkt);
+
+        pkt.pts = av_rescale_q_rnd(pkt.pts, ist.st->time_base, ost.st->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+        pkt.dts = av_rescale_q_rnd(pkt.dts, ist.st->time_base, ost.st->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+        pkt.duration = av_rescale_q(pkt.duration, ist.st->time_base, ost.st->time_base);
+        pkt.pos = -1;
+        if ((ret = av_interleaved_write_frame(ofmt_ctx, &pkt)) < 0) {
+            J4A_ALOGE( "Error muxing packet\n");
+            break;
+        }
+//        if (pkt.dts != AV_NOPTS_VALUE)
+//            pkt.dts += av_rescale_q(0, AV_TIME_BASE_Q, ist.st->time_base);
+//        if (pkt.pts != AV_NOPTS_VALUE)
+//            pkt.pts += av_rescale_q(0, AV_TIME_BASE_Q, ist.st->time_base);
+//        pkt_dts = av_rescale_q_rnd(pkt.dts, ist.st->time_base, AV_TIME_BASE_Q, (enum AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+//
+//        duration = av_rescale_q(0, time_base_tmp, ist.st->time_base);
+//        if (pkt.pts != AV_NOPTS_VALUE) {
+//            pkt.pts += duration;
+////            ist.max_pts = FFMAX(pkt.pts, ist.max_pts);
+////            ist.min_pts = FFMIN(pkt.pts, ist.min_pts);
+//        }
+//
+//        if (pkt.dts != AV_NOPTS_VALUE)
+//            pkt.dts += duration;
+//
+//        pkt_dts = av_rescale_q_rnd(pkt.dts, ist.st->time_base, AV_TIME_BASE_Q, (enum AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
     }
     //Write file trailer
     av_write_trailer(ofmt_ctx);
-
-#if USE_H264BSF
-    av_bitstream_filter_close(h264bsfc);
-#endif
-#if USE_AACBSF
-    av_bitstream_filter_close(aacbsfc);
-#endif
 
     end:
     avformat_close_input(&ifmt_ctx_v);
