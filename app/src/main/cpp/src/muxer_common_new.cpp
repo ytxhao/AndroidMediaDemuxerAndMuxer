@@ -292,6 +292,7 @@ OutputStream *new_output_stream(FFContext *mFFContext,AVFormatContext *oc, enum 
         if (!bsf_name)
             return NULL;
 
+        J4A_ALOGD("bsf_name=%s",bsf_name);
         filter = av_bsf_get_by_name(bsf_name);
         if (!filter) {
             J4A_ALOGE( "Unknown bitstream filter %s\n", bsf_name);
